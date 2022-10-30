@@ -1,0 +1,21 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "C/C++: clang++ build and debug active file",
+        "type": "cppdbg",
+        "request": "launch",
+        "program": "${fileDirname}/${fileBasenameNoExtension}",
+        "args": ["map1.txt", "5", "1.57,0.78,1.57,0.78,1.57", "0.392,2.35,3.14,2.82,4.71", "0", "output.txt"],
+        "stopAtEntry": true,
+        "cwd": "${workspaceFolder}/code/",
+        "environment": [],
+        "externalConsole": false,
+        "MIMode": "lldb",
+        "preLaunchTask": "C/C++: clang++ build active file"
+      }
+    ]
+  }
