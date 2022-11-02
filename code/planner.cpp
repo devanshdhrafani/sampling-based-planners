@@ -3,283 +3,200 @@
  * planner.c
  *
  *=================================================================*/
-#include <math.h>
-#include <random>
-#include <vector>
-#include <array>
-#include <algorithm>
 
-#include <tuple>
-#include <string>
-#include <stdexcept>
-#include <regex> // For regex and split logic
-#include <iostream> // cout, endl
-#include <fstream> // For reading/writing files
-#include <assert.h> 
+#include "planner.h"
 
-/* Input Arguments */
-#define	MAP_IN      prhs[0]
-#define	ARMSTART_IN	prhs[1]
-#define	ARMGOAL_IN     prhs[2]
-#define	PLANNER_ID_IN     prhs[3]
-
-/* Planner Ids */
-#define RRT         0
-#define RRTCONNECT  1
-#define RRTSTAR     2
-#define PRM         3
-
-/* Output Arguments */
-#define	PLAN_OUT	plhs[0]
-#define	PLANLENGTH_OUT	plhs[1]
-
-#define GETMAPINDEX(X, Y, XSIZE, YSIZE) (Y*XSIZE + X)
-
-#if !defined(MAX)
-#define	MAX(A, B)	((A) > (B) ? (A) : (B))
-#endif
-
-#if !defined(MIN)
-#define	MIN(A, B)	((A) < (B) ? (A) : (B))
-#endif
-
-#define PI 3.141592654
-
-//the length of each link in the arm
-#define LINKLENGTH_CELLS 10
-
-// Some potentially helpful imports
-using std::vector;
-using std::array;
-using std::string;
-using std::runtime_error;
-using std::tuple;
-using std::make_tuple;
-using std::tie;
-using std::cout;
-using std::endl;
-
-/// @brief 
-/// @param filepath 
-/// @return map, x_size, y_size
-tuple<double*, int, int> loadMap(string filepath) {
-	std::FILE *f = fopen(filepath.c_str(), "r");
-	if (f) {
+double distance_angles(double* angles1, double* angles2, int numofDOFs)
+{
+    double dist = 0;
+	for(int i=0; i<numofDOFs; i++)
+	{
+		dist = dist + (angles1[i]-angles2[i]) * (angles1[i]-angles2[i]);
 	}
-	else {
-		printf("Opening file failed! \n");
-		throw runtime_error("Opening map file failed!");
-	}
-	int height, width;
-	if (fscanf(f, "height %d\nwidth %d\n", &height, &width) != 2) {
-		throw runtime_error("Invalid loadMap parsing map metadata");
-	}
-	
-	////// Go through file and add to m_occupancy
-	double* map = new double[height*width];
-
-	double cx, cy, cz;
-	for (int y = 0; y < height; y++) {
-		for (int x = 0; x < width; x++) {
-			char c;
-			do {
-				if (fscanf(f, "%c", &c) != 1) {
-					throw runtime_error("Invalid parsing individual map data");
-				}
-			} while (isspace(c));
-			if (!(c == '0')) { 
-				map[y+x*width] = 1; // Note transposed from visual
-			} else {
-				map[y+x*width] = 0;
-			}
-		}
-	}
-	fclose(f);
-	return make_tuple(map, width, height);
+	return sqrt(dist);
 }
 
-// Splits string based on deliminator
-vector<string> split(const string& str, const string& delim) {   
-		// https://stackoverflow.com/questions/14265581/parse-split-a-string-in-c-using-string-delimiter-standard-c/64886763#64886763
-		const std::regex ws_re(delim);
-		return { std::sregex_token_iterator(str.begin(), str.end(), ws_re, -1), std::sregex_token_iterator() };
+int newConfig(double* q, double* q_near, double* q_new, int numofDOFs, double* map, int x_size, int y_size) 
+{
+    // move by EPSILON towards q from q_near and return q_new
+
+    double dist = 0;
+    int success = 0;
+    int i,j;
+    for (j = 0; j < numofDOFs; j++){
+        if(dist < fabs(q_near[j] - q[j]))
+            dist = fabs(q_near[j] - q[j]);
+    }
+    int numofsamples = (int)(dist/(PI/20));
+
+    double* tmp_angles = (double*)malloc(numofDOFs*sizeof(double));
+    double* saved_angles = NULL;
+
+    for (i = 1; i < numofsamples; i++)
+    {
+    	for(j = 0; j<numofDOFs; j++)
+    	{
+    		tmp_angles[j] = q_near[j] + ((double)(i)/(numofsamples-1))*(q[j] - q_near[j]);
+    	}
+    	if(IsValidArmConfiguration(tmp_angles, numofDOFs, map, x_size, y_size) && 
+    		distance_angles(tmp_angles, q_near, numofDOFs) < EPSILON)
+    	{
+    		memcpy(q_new, tmp_angles, numofDOFs*sizeof(double));
+            success = 1;
+    	}
+    	else
+    	{break;}
+    }
+
+    free(tmp_angles);
+    return success;
+
 }
 
-
-double* doubleArrayFromString(string str) {
-	vector<string> vals = split(str, ",");
-	double* ans = new double[vals.size()];
-	for (int i = 0; i < vals.size(); ++i) {
-		ans[i] = std::stod(vals[i]);
-	}
-	return ans;
+int isAtGoal(double* angles, double* goal_angles, int numofDOFs)
+{
+    int reached = 0;
+    double distance = 0;
+    int i,j;
+    for (j = 0; j < numofDOFs; j++){
+        if(distance < fabs(angles[j] - goal_angles[j]))
+            distance = fabs(angles[j] - goal_angles[j]);
+    }
+    int numofsamples = (int)(distance/(PI/20));
+    if(numofsamples < 2){
+        printf("Arm reached the goal\n");
+        reached = 1;
+    }
+    return reached;
 }
 
-bool equalDoubleArrays(double* v1, double *v2, int size) {
-    for (int i = 0; i < size; ++i) {
-        if (abs(v1[i]-v2[i]) > 1e-3) {
-            cout << endl;
-            return false;
+// Extend tree towards the sample node
+int extendTree(Tree* tree, double* q, int numofDOFs, double* map, int x_size, int y_size)
+{
+    int advanced = 0;
+    int q_near_id = tree->nearestNeighbour(q);
+    double* q_near = tree->getNode(q_near_id);
+    double* q_new = (double*)malloc(numofDOFs*sizeof(double));
+    if(newConfig(q, q_near, q_new, numofDOFs, map, x_size, y_size)) 
+    {
+        int q_new_id = tree->addNode(q_new);
+        tree->addEdge(q_new_id, q_near_id);
+        advanced = 1;
+    }
+    return advanced;
+}
+
+// Generate Random Config
+double* randomConfig(int numofDOFs, double* map, int x_size, int y_size) {
+    double* sample_node_rad = new double[numofDOFs];
+    // Check if config is valid
+    int isvalid = 0;
+    while(!isvalid) {
+        for (int i = 0; i < numofDOFs; i++) {
+            int random_deg = rand() % 360;
+            sample_node_rad[i] = (double)random_deg / 180 * PI;
+        }
+        if(IsValidArmConfiguration(sample_node_rad, numofDOFs, map, x_size, y_size)) {
+            isvalid = 1;
         }
     }
-    return true;
+    return sample_node_rad;
 }
 
-typedef struct {
-	int X1, Y1;
-	int X2, Y2;
-	int Increment;
-	int UsingYIndex;
-	int DeltaX, DeltaY;
-	int DTerm;
-	int IncrE, IncrNE;
-	int XIndex, YIndex;
-	int Flipped;
-} bresenham_param_t;
+static void RRTplanner(
+			double* map,
+			int x_size,
+			int y_size,
+			double* armstart_anglesV_rad,
+			double* armgoal_anglesV_rad,
+            int numofDOFs,
+            double*** plan,
+            int* planlength)
+{
 
+	// seed
+	// srand( (unsigned)time( NULL ) );
+	// srand(1);
 
-void ContXY2Cell(double x, double y, short unsigned int* pX, short unsigned int *pY, int x_size, int y_size) {
-	double cellsize = 1.0;
-	//take the nearest cell
-	*pX = (int)(x/(double)(cellsize));
-	if( x < 0) *pX = 0;
-	if( *pX >= x_size) *pX = x_size-1;
+	//no plan by default
+	*plan = NULL;
+	*planlength = 0;
 
-	*pY = (int)(y/(double)(cellsize));
-	if( y < 0) *pY = 0;
-	if( *pY >= y_size) *pY = y_size-1;
-}
+	// Initialize tree structure with start node
+	Tree tree(numofDOFs, armstart_anglesV_rad);
 
+	// Number of samples
+	int K = 10000;
+	int k = 0;
 
-void get_bresenham_parameters(int p1x, int p1y, int p2x, int p2y, bresenham_param_t *params) {
-	params->UsingYIndex = 0;
+	// Goal bias
+	double goal_bias = 0.05;
 
-	if (fabs((double)(p2y-p1y)/(double)(p2x-p1x)) > 1)
-		(params->UsingYIndex)++;
+	// target found flag
+	bool target_found = 0;
 
-	if (params->UsingYIndex)
+	while(!target_found && k < K)
+	{
+		k++;
+
+		double* q_rand = (double*)malloc(numofDOFs*sizeof(double));
+		// Sample a random node with goal bias
+		if((double)rand() / RAND_MAX < goal_bias)
 		{
-			params->Y1=p1x;
-			params->X1=p1y;
-			params->Y2=p2x;
-			params->X2=p2y;
+			// Sample goal node
+			// cout << "Sampling goal node" << endl;
+			q_rand = armgoal_anglesV_rad;
 		}
-	else
+		else
 		{
-			params->X1=p1x;
-			params->Y1=p1y;
-			params->X2=p2x;
-			params->Y2=p2y;
+			// Sample random node
+			// cout << "Sampling random node" << endl;
+			q_rand = randomConfig(numofDOFs, map, x_size, y_size);
 		}
-
-	 if ((p2x - p1x) * (p2y - p1y) < 0)
+		
+		// Extend the tree towards the sample node
+		if(!extendTree(&tree, q_rand, numofDOFs, map, x_size, y_size))
 		{
-			params->Flipped = 1;
-			params->Y1 = -params->Y1;
-			params->Y2 = -params->Y2;
+			continue;
 		}
-	else
-		params->Flipped = 0;
 
-	if (params->X2 > params->X1)
-		params->Increment = 1;
-	else
-		params->Increment = -1;
+		int q_new_id = tree.getNewNodeID();
+		double* q_new = tree.getNode(q_new_id);
 
-	params->DeltaX=params->X2-params->X1;
-	params->DeltaY=params->Y2-params->Y1;
-
-	params->IncrE=2*params->DeltaY*params->Increment;
-	params->IncrNE=2*(params->DeltaY-params->DeltaX)*params->Increment;
-	params->DTerm=(2*params->DeltaY-params->DeltaX)*params->Increment;
-
-	params->XIndex = params->X1;
-	params->YIndex = params->Y1;
-}
-
-void get_current_point(bresenham_param_t *params, int *x, int *y) {
-	if (params->UsingYIndex) {
-        *y = params->XIndex;
-        *x = params->YIndex;
-        if (params->Flipped)
-            *x = -*x;
-    }
-	else {
-        *x = params->XIndex;
-        *y = params->YIndex;
-        if (params->Flipped)
-            *y = -*y;
-    }
-}
-
-int get_next_point(bresenham_param_t *params) {
-	if (params->XIndex == params->X2) {
-        return 0;
-    }
-	params->XIndex += params->Increment;
-	if (params->DTerm < 0 || (params->Increment < 0 && params->DTerm <= 0))
-		params->DTerm += params->IncrE;
-	else {
-        params->DTerm += params->IncrNE;
-        params->YIndex += params->Increment;
+		// Check if the new node is close to the goal
+		if (isAtGoal(q_new, armgoal_anglesV_rad, numofDOFs))
+		{
+			target_found = 1;
+		}
 	}
-	return 1;
+
+	// If target is found, construct and return the plan
+	if(target_found)
+	{
+		int q_new_id = tree.getNewNodeID();
+		double* q_new = tree.getNode(q_new_id);
+		vector<int> path;
+		int next_id = q_new_id;
+		while (next_id != 0) {
+			path.insert(path.begin(), next_id);
+			next_id = tree.getParentID(next_id);
+		}
+		path.insert(path.begin(), 0);
+		*planlength = path.size();
+		*plan = (double**) malloc(path.size()*sizeof(double*));
+		for(int i=0; i<path.size(); i++)
+		{
+			(*plan)[i] = (double*) malloc(numofDOFs*sizeof(double));
+			memcpy((*plan)[i], tree.getNode(path[i]), numofDOFs*sizeof(double));
+		}
+	}
+	else
+	{
+		printf("Target not found\n");
+	}	
+
 }
 
-
-
-int IsValidLineSegment(double x0, double y0, double x1, double y1, double*	map,
-			 int x_size, int y_size) {
-	bresenham_param_t params;
-	int nX, nY; 
-	short unsigned int nX0, nY0, nX1, nY1;
-
-	//printf("checking link <%f %f> to <%f %f>\n", x0,y0,x1,y1);
-		
-	//make sure the line segment is inside the environment
-	if(x0 < 0 || x0 >= x_size ||
-		x1 < 0 || x1 >= x_size ||
-		y0 < 0 || y0 >= y_size ||
-		y1 < 0 || y1 >= y_size)
-		return 0;
-
-	ContXY2Cell(x0, y0, &nX0, &nY0, x_size, y_size);
-	ContXY2Cell(x1, y1, &nX1, &nY1, x_size, y_size);
-
-	//printf("checking link <%d %d> to <%d %d>\n", nX0,nY0,nX1,nY1);
-
-	//iterate through the points on the segment
-	get_bresenham_parameters(nX0, nY0, nX1, nY1, &params);
-	do {
-		get_current_point(&params, &nX, &nY);
-		if(map[GETMAPINDEX(nX,nY,x_size,y_size)] == 1)
-			return 0;
-	} while (get_next_point(&params));
-
-	return 1;
-}
-
-int IsValidArmConfiguration(double* angles, int numofDOFs, double*	map,
-			 int x_size, int y_size) {
-    double x0,y0,x1,y1;
-    int i;
-		
-	 //iterate through all the links starting with the base
-	x1 = ((double)x_size)/2.0;
-	y1 = 0;
-	for(i = 0; i < numofDOFs; i++){
-		//compute the corresponding line segment
-		x0 = x1;
-		y0 = y1;
-		x1 = x0 + LINKLENGTH_CELLS*cos(2*PI-angles[i]);
-		y1 = y0 - LINKLENGTH_CELLS*sin(2*PI-angles[i]);
-
-		//check the validity of the corresponding line segment
-		if(!IsValidLineSegment(x0,y0,x1,y1,map,x_size,y_size))
-			return 0;
-	}    
-	return 1;
-}
 
 static void planner(
 			double* map,
@@ -291,36 +208,39 @@ static void planner(
             double*** plan,
             int* planlength)
 {
-	//no plan by default
-	*plan = NULL;
-	*planlength = 0;
-		
-    //for now just do straight interpolation between start and goal checking for the validity of samples
 
-    double distance = 0;
-    int i,j;
-    for (j = 0; j < numofDOFs; j++){
-        if(distance < fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]))
-            distance = fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]);
-    }
-    int numofsamples = (int)(distance/(PI/20));
-    if(numofsamples < 2){
-        printf("The arm is already at the goal\n");
-        return;
-    }
-	int countNumInvalid = 0;
-    *plan = (double**) malloc(numofsamples*sizeof(double*));
-    for (i = 0; i < numofsamples; i++){
-        (*plan)[i] = (double*) malloc(numofDOFs*sizeof(double)); 
-        for(j = 0; j < numofDOFs; j++){
-            (*plan)[i][j] = armstart_anglesV_rad[j] + ((double)(i)/(numofsamples-1))*(armgoal_anglesV_rad[j] - armstart_anglesV_rad[j]);
-        }
-        if(!IsValidArmConfiguration((*plan)[i], numofDOFs, map, x_size, y_size)) {
-			++countNumInvalid;
-        }
-    }
-	printf("Linear interpolation collided at %d instances across the path\n", countNumInvalid);
-    *planlength = numofsamples;
+	RRTplanner(map, x_size, y_size, armstart_anglesV_rad, armgoal_anglesV_rad, numofDOFs, plan, planlength);
+
+	//no plan by default
+	// *plan = NULL;
+	// *planlength = 0;
+		
+    // //for now just do straight interpolation between start and goal checking for the validity of samples
+
+    // double distance = 0;
+    // int i,j;
+    // for (j = 0; j < numofDOFs; j++){
+    //     if(distance < fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]))
+    //         distance = fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]);
+    // }
+    // int numofsamples = (int)(distance/(PI/20));
+    // if(numofsamples < 2){
+    //     printf("The arm is already at the goal\n");
+    //     return;
+    // }
+	// int countNumInvalid = 0;
+    // *plan = (double**) malloc(numofsamples*sizeof(double*));
+    // for (i = 0; i < numofsamples; i++){
+    //     (*plan)[i] = (double*) malloc(numofDOFs*sizeof(double)); 
+    //     for(j = 0; j < numofDOFs; j++){
+    //         (*plan)[i][j] = armstart_anglesV_rad[j] + ((double)(i)/(numofsamples-1))*(armgoal_anglesV_rad[j] - armstart_anglesV_rad[j]);
+    //     }
+    //     if(!IsValidArmConfiguration((*plan)[i], numofDOFs, map, x_size, y_size)) {
+	// 		++countNumInvalid;
+    //     }
+    // }
+	// printf("Linear interpolation collided at %d instances across the path\n", countNumInvalid);
+    // *planlength = numofsamples;
     
     return;
 }
@@ -358,7 +278,23 @@ int main(int argc, char** argv) {
 
 	double** plan = NULL;
 	int planlength = 0;
-	planner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+
+	switch(whichPlanner) {
+		case RRT:
+			RRTplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+			break;
+		case RRTCONNECT:
+			// RRTConnectplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+			break;
+		case RRTSTAR:
+			// RRTStarplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+			break;
+		case PRM:
+			// PRMplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+			break;
+		default:
+			throw runtime_error("Invalid planner number!\n");
+	}
 
 	//// Feel free to modify anything above.
 	//// If you modify something below, please change it back afterwards as my 
