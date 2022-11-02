@@ -103,7 +103,7 @@ int extendTreeRRTStar(Tree* tree, double* q, int numofDOFs, double* map, int x_s
     {
         int q_new_id = tree->addNode(q_new);
         tree->addEdge(q_new_id, q_near_id);
-		cost_new = tree->distBetweenNodes(q_new, q_near);
+		tree->costs[q_new_id] = tree->distBetweenNodes(q_new, q_near);
 
 		for(int i=0; i<tree->nodes.size(); i++)
 		{
@@ -183,7 +183,7 @@ static void RRTStarplanner(
 	int k = 0;
 
 	// Goal bias
-	double goal_bias = 0.05;
+	double goal_bias = 0.1;
 
 	// target found flag
 	bool target_found = 0;
