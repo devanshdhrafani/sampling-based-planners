@@ -4,6 +4,11 @@ import argparse
 import subprocess # For executing c++ executable
 import pandas as pd
 from timeit import default_timer as timer
+import os
+
+path_append = "/Users/dd/University/planning/hw2/code/"
+os.chdir(os.path.dirname(path_append))
+print(os.curdir)
 
 ###############################################################
 ################### Util Functions Below ######################
@@ -71,7 +76,7 @@ def graderMain(executablePath, gradingCSV):
                     scores.append([aPlanner, inputMap, i, numSteps, cost, timespent, success])
             
                 ### Visualize their results
-                commandViz = "python visualizer.py tmp.txt --gifFilepath=grades_{}.gif".format(i)
+                commandViz = "python3 visualizer.py tmp.txt --gifFilepath=grades_{}.gif".format(i)
                 commandViz += " --incPrev=1"
                 subprocess.run(commandViz.split(" "), check=True) # True if want to see failure errors
             except Exception as exc:
@@ -84,4 +89,6 @@ def graderMain(executablePath, gradingCSV):
             
 
 if __name__ == "__main__":
-    graderMain("./planner.out", "test.csv")
+    planner_path = "./planner.out"
+    grading_csv = "./grades.csv"
+    graderMain(planner_path, grading_csv)
