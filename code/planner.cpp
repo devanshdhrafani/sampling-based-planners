@@ -113,11 +113,6 @@ static void RRTplanner(
             double*** plan,
             int* planlength)
 {
-
-	// seed
-	// srand( (unsigned)time( NULL ) );
-	// srand(1);
-
 	//no plan by default
 	*plan = NULL;
 	*planlength = 0;
@@ -126,7 +121,7 @@ static void RRTplanner(
 	Tree tree(numofDOFs, armstart_anglesV_rad);
 
 	// Number of samples
-	int K = 10000;
+	int K = 100000;
 	int k = 0;
 
 	// Goal bias
@@ -208,39 +203,36 @@ static void planner(
             double*** plan,
             int* planlength)
 {
-
-	RRTplanner(map, x_size, y_size, armstart_anglesV_rad, armgoal_anglesV_rad, numofDOFs, plan, planlength);
-
 	//no plan by default
-	// *plan = NULL;
-	// *planlength = 0;
+	*plan = NULL;
+	*planlength = 0;
 		
-    // //for now just do straight interpolation between start and goal checking for the validity of samples
+    //for now just do straight interpolation between start and goal checking for the validity of samples
 
-    // double distance = 0;
-    // int i,j;
-    // for (j = 0; j < numofDOFs; j++){
-    //     if(distance < fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]))
-    //         distance = fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]);
-    // }
-    // int numofsamples = (int)(distance/(PI/20));
-    // if(numofsamples < 2){
-    //     printf("The arm is already at the goal\n");
-    //     return;
-    // }
-	// int countNumInvalid = 0;
-    // *plan = (double**) malloc(numofsamples*sizeof(double*));
-    // for (i = 0; i < numofsamples; i++){
-    //     (*plan)[i] = (double*) malloc(numofDOFs*sizeof(double)); 
-    //     for(j = 0; j < numofDOFs; j++){
-    //         (*plan)[i][j] = armstart_anglesV_rad[j] + ((double)(i)/(numofsamples-1))*(armgoal_anglesV_rad[j] - armstart_anglesV_rad[j]);
-    //     }
-    //     if(!IsValidArmConfiguration((*plan)[i], numofDOFs, map, x_size, y_size)) {
-	// 		++countNumInvalid;
-    //     }
-    // }
-	// printf("Linear interpolation collided at %d instances across the path\n", countNumInvalid);
-    // *planlength = numofsamples;
+    double distance = 0;
+    int i,j;
+    for (j = 0; j < numofDOFs; j++){
+        if(distance < fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]))
+            distance = fabs(armstart_anglesV_rad[j] - armgoal_anglesV_rad[j]);
+    }
+    int numofsamples = (int)(distance/(PI/20));
+    if(numofsamples < 2){
+        printf("The arm is already at the goal\n");
+        return;
+    }
+	int countNumInvalid = 0;
+    *plan = (double**) malloc(numofsamples*sizeof(double*));
+    for (i = 0; i < numofsamples; i++){
+        (*plan)[i] = (double*) malloc(numofDOFs*sizeof(double)); 
+        for(j = 0; j < numofDOFs; j++){
+            (*plan)[i][j] = armstart_anglesV_rad[j] + ((double)(i)/(numofsamples-1))*(armgoal_anglesV_rad[j] - armstart_anglesV_rad[j]);
+        }
+        if(!IsValidArmConfiguration((*plan)[i], numofDOFs, map, x_size, y_size)) {
+			++countNumInvalid;
+        }
+    }
+	printf("Linear interpolation collided at %d instances across the path\n", countNumInvalid);
+    *planlength = numofsamples;
     
     return;
 }
@@ -275,6 +267,10 @@ int main(int argc, char** argv) {
 
 	///////////////////////////////////////
 	//// Feel free to modify anything below. Be careful modifying anything above.
+
+	// seed
+	// srand( (unsigned)time( NULL ) );
+	srand(1);
 
 	double** plan = NULL;
 	int planlength = 0;
