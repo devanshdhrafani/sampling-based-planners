@@ -10,7 +10,9 @@ class Tree{
             numDOFS = nDOFs;
             nodes.clear();
             edges.clear();
+            costs.clear();
             nodes.push_back(armstart_anglesV_rad);
+            costs[0] = 0.0;
         }
 
         int addNode(double* sample_node_rad)
@@ -58,7 +60,18 @@ class Tree{
             return nearest_node_id;
         }
 
+        double distBetweenNodes(double* node1, double* node2)
+        {
+            double dist = 0;
+            for (int i = 0; i < numDOFS; i++) {
+                dist += (node1[i] - node2[i]) * (node1[i] - node2[i]);
+            }
+            dist = sqrt(dist);
+            return dist;
+        }
+
         vector<double*> nodes;
-        unordered_map<int, int> edges;
+        unordered_map<int, int> edges;    // child, parent
+        unordered_map<int, double> costs; // idx, cost
         int numDOFS;
 };

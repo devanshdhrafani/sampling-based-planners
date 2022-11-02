@@ -64,16 +64,15 @@ int isAtGoal(double* angles, double* goal_angles, int numofDOFs)
     }
     int numofsamples = (int)(distance/(PI/20));
     if(numofsamples < 2){
-        printf("Arm reached the goal\n");
         reached = 1;
     }
     return reached;
 }
 
-// Extend tree towards the sample node
+// Extend tree towards the sample node (RRT and RRT-Connect)
 int extendTree(Tree* tree, double* q, int numofDOFs, double* map, int x_size, int y_size)
 {
-    int advanced = 0;
+    int status = TRAPPED;
     int q_near_id = tree->nearestNeighbour(q);
     double* q_near = tree->getNode(q_near_id);
     double* q_new = (double*)malloc(numofDOFs*sizeof(double));
@@ -81,9 +80,50 @@ int extendTree(Tree* tree, double* q, int numofDOFs, double* map, int x_size, in
     {
         int q_new_id = tree->addNode(q_new);
         tree->addEdge(q_new_id, q_near_id);
-        advanced = 1;
+
+		if(isAtGoal(q_new, q, numofDOFs))
+			status = REACHED;
+		else
+			status = ADVANCED;
     }
-    return advanced;
+    return status;
+}
+
+// Extend tree towards the sample node (RRT star)
+int extendTreeRRTStar(Tree* tree, double* q, int numofDOFs, double* map, int x_size, int y_size)
+{
+    int status = TRAPPED;
+	double cost_new = 0.0;
+	double dist = 0.0;
+	double radius = EPSILON;
+    int q_near_id = tree->nearestNeighbour(q);
+    double* q_near = tree->getNode(q_near_id);
+    double* q_new = (double*)malloc(numofDOFs*sizeof(double));
+    if(newConfig(q, q_near, q_new, numofDOFs, map, x_size, y_size)) 
+    {
+        int q_new_id = tree->addNode(q_new);
+        tree->addEdge(q_new_id, q_near_id);
+		cost_new = tree->distBetweenNodes(q_new, q_near);
+
+		for(int i=0; i<tree->nodes.size(); i++)
+		{
+			dist = tree->distBetweenNodes(q_new, tree->nodes[i]);
+			if(dist < radius)
+			{
+				if(cost_new + dist < tree->costs[i])
+				{
+					tree->costs[i] = cost_new + dist;
+					tree->addEdge(i, q_new_id);
+				}
+			}
+		}
+
+		if(isAtGoal(q_new, q, numofDOFs))
+			status = REACHED;
+		else
+			status = ADVANCED;
+    }
+    return status;
 }
 
 // Generate Random Config
@@ -103,7 +143,25 @@ double* randomConfig(int numofDOFs, double* map, int x_size, int y_size) {
     return sample_node_rad;
 }
 
-static void RRTplanner(
+void swap(Tree *tree1, Tree *tree2)
+{
+	Tree temp = *tree1;
+	*tree1 = *tree2;
+	*tree2 = temp;
+}
+
+int connect(Tree* tree_b, double* q_new, int numofDOFs, double* map, int x_size, int y_size)
+{
+	int status = TRAPPED;
+	do{
+		status = extendTree(tree_b, q_new, numofDOFs, map, x_size, y_size);
+	}
+	while(status == ADVANCED);
+	return status;
+}
+
+// RRT Star Planner
+static void RRTStarplanner(
 			double* map,
 			int x_size,
 			int y_size,
@@ -121,7 +179,7 @@ static void RRTplanner(
 	Tree tree(numofDOFs, armstart_anglesV_rad);
 
 	// Number of samples
-	int K = 100000;
+	int K = 1000000;
 	int k = 0;
 
 	// Goal bias
@@ -150,7 +208,7 @@ static void RRTplanner(
 		}
 		
 		// Extend the tree towards the sample node
-		if(!extendTree(&tree, q_rand, numofDOFs, map, x_size, y_size))
+		if(extendTreeRRTStar(&tree, q_rand, numofDOFs, map, x_size, y_size) == TRAPPED)
 		{
 			continue;
 		}
@@ -162,6 +220,230 @@ static void RRTplanner(
 		if (isAtGoal(q_new, armgoal_anglesV_rad, numofDOFs))
 		{
 			target_found = 1;
+			cout << "Target found" << endl;
+			cout << "Number of samples: " << k << endl;
+			if (!equalDoubleArrays(q_new, armgoal_anglesV_rad, numofDOFs))
+			{
+				// we are very near to goal but not quite there
+				// so add the goal to the tree
+				int node_id = tree.addNode(armgoal_anglesV_rad);
+				tree.addEdge(node_id,q_new_id);
+			}
+		}
+	}
+
+	// If target is found, construct and return the plan
+	if(target_found)
+	{
+		int q_new_id = tree.getNewNodeID();
+		double* q_new = tree.getNode(q_new_id);
+		vector<int> path;
+		int next_id = q_new_id;
+		while (next_id != 0) {
+			path.insert(path.begin(), next_id);
+			next_id = tree.getParentID(next_id);
+		}
+		path.insert(path.begin(), 0);
+		*planlength = path.size();
+		*plan = (double**) malloc(path.size()*sizeof(double*));
+		for(int i=0; i<path.size(); i++)
+		{
+			(*plan)[i] = (double*) malloc(numofDOFs*sizeof(double));
+			memcpy((*plan)[i], tree.getNode(path[i]), numofDOFs*sizeof(double));
+		}
+	}
+	else
+	{
+		printf("Target not found\n");
+	}	
+}
+
+// RRT Connect Planner
+static void RRTConnectplanner(
+			double* map,
+			int x_size,
+			int y_size,
+			double* armstart_anglesV_rad,
+			double* armgoal_anglesV_rad,
+            int numofDOFs,
+            double*** plan,
+            int* planlength)
+{
+	//no plan by default
+	*plan = NULL;
+	*planlength = 0;
+	int total_path_length = 0;
+
+	// Initialize tree structure with start node
+	Tree tree_a(numofDOFs, armstart_anglesV_rad);
+	Tree tree_b(numofDOFs, armgoal_anglesV_rad);
+
+	// Number of samples
+	int K = 1000000;
+	int k = 0;
+
+	// target found flag
+	bool connected = 0;
+
+	while(!connected && k < K)
+	{
+		k++;
+
+		double* q_rand = (double*)malloc(numofDOFs*sizeof(double));
+		// Sample random node
+		// cout << "Sampling random node" << endl;
+		q_rand = randomConfig(numofDOFs, map, x_size, y_size);
+		
+		// Extend the tree towards the sample node
+		if(extendTree(&tree_a, q_rand, numofDOFs, map, x_size, y_size) != TRAPPED)
+		{
+			int q_new_id = tree_a.getNewNodeID();
+			double* q_new = tree_a.getNode(q_new_id);
+			if(connect(&tree_b, q_new, numofDOFs, map, x_size, y_size) == REACHED)
+			{
+				connected = 1;
+				cout << "Connected" << endl;
+				cout << "Number of samples: " << k << endl;
+				break;
+			}
+		}
+		swap(&tree_a, &tree_b);
+	}
+
+	// If both trees connect, construct and return the plan
+	if(connected)
+	{
+
+		// Make tree_a as start tree and tree_b as goal tree
+		double *q = tree_b.getNode(0);
+		if(!isAtGoal(q, armgoal_anglesV_rad, numofDOFs))
+			swap(&tree_a, &tree_b);
+
+
+		// Construct the plan
+
+		// Extract path from goal tree (tree_b)
+		vector<int> path_b;
+		int q_new_id = tree_b.getNewNodeID();
+		double* q_new = tree_b.getNode(q_new_id);
+		int next_id = q_new_id;
+		while (next_id != 0) {
+			path_b.insert(path_b.end(), next_id);
+			next_id = tree_b.getParentID(next_id);
+		}
+		path_b.insert(path_b.end(), 0);
+
+		// Extract path from start tree (tree_a)
+		vector<int> path_a;
+		q_new_id = tree_a.getNewNodeID();
+		q_new = tree_a.getNode(q_new_id);
+		next_id = q_new_id - 1;
+		while (next_id != 0) {
+			path_a.insert(path_a.begin(), next_id);
+			next_id = tree_a.getParentID(next_id);
+		}
+		path_a.insert(path_a.begin(), 0);
+
+		total_path_length = path_a.size() + path_b.size();
+		*planlength = total_path_length;
+		*plan = (double**) malloc(total_path_length*sizeof(double*));
+		for(int i=0; i<path_a.size(); i++)
+		{
+			(*plan)[i] = (double*) malloc(numofDOFs*sizeof(double));
+			memcpy((*plan)[i], tree_a.getNode(path_a[i]), numofDOFs*sizeof(double));
+		}
+		for(int i=path_a.size(); i<total_path_length; i++)
+		{
+			(*plan)[i] = (double*) malloc(numofDOFs*sizeof(double));
+			memcpy((*plan)[i], tree_b.getNode(path_b[i-path_a.size()]), numofDOFs*sizeof(double));
+		}
+	}
+	else
+	{
+		printf("Trees did not connect\n");
+	}
+
+	int countNumInvalid = 0;
+    for (int i = 0; i < total_path_length; i++)
+	{
+        if(!IsValidArmConfiguration((*plan)[i], numofDOFs, map, x_size, y_size)) {
+			++countNumInvalid;
+        }
+    }
+	printf("Collided at %d instances across the path\n", countNumInvalid);
+
+
+}
+
+// RRT Planner
+static void RRTplanner(
+			double* map,
+			int x_size,
+			int y_size,
+			double* armstart_anglesV_rad,
+			double* armgoal_anglesV_rad,
+            int numofDOFs,
+            double*** plan,
+            int* planlength)
+{
+	//no plan by default
+	*plan = NULL;
+	*planlength = 0;
+
+	// Initialize tree structure with start node
+	Tree tree(numofDOFs, armstart_anglesV_rad);
+
+	// Number of samples
+	int K = 1000000;
+	int k = 0;
+
+	// Goal bias
+	double goal_bias = 0.05;
+
+	// target found flag
+	bool target_found = 0;
+
+	while(!target_found && k < K)
+	{
+		k++;
+
+		double* q_rand = (double*)malloc(numofDOFs*sizeof(double));
+		// Sample a random node with goal bias
+		if((double)rand() / RAND_MAX < goal_bias)
+		{
+			// Sample goal node
+			// cout << "Sampling goal node" << endl;
+			q_rand = armgoal_anglesV_rad;
+		}
+		else
+		{
+			// Sample random node
+			// cout << "Sampling random node" << endl;
+			q_rand = randomConfig(numofDOFs, map, x_size, y_size);
+		}
+		
+		// Extend the tree towards the sample node
+		if(extendTree(&tree, q_rand, numofDOFs, map, x_size, y_size) == TRAPPED)
+		{
+			continue;
+		}
+
+		int q_new_id = tree.getNewNodeID();
+		double* q_new = tree.getNode(q_new_id);
+
+		// Check if the new node is close to the goal
+		if (isAtGoal(q_new, armgoal_anglesV_rad, numofDOFs))
+		{
+			target_found = 1;
+			cout << "Target found" << endl;
+			cout << "Number of samples: " << k << endl;
+			if (!equalDoubleArrays(q_new, armgoal_anglesV_rad, numofDOFs))
+			{
+				// we are very near to goal but not quite there
+				// so add the goal to the tree
+				int node_id = tree.addNode(armgoal_anglesV_rad);
+				tree.addEdge(node_id,q_new_id);
+			}
 		}
 	}
 
@@ -269,8 +551,8 @@ int main(int argc, char** argv) {
 	//// Feel free to modify anything below. Be careful modifying anything above.
 
 	// seed
-	// srand( (unsigned)time( NULL ) );
-	srand(1);
+	srand( (unsigned)time( NULL ) );
+	// srand(1);
 
 	double** plan = NULL;
 	int planlength = 0;
@@ -280,16 +562,26 @@ int main(int argc, char** argv) {
 			RRTplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 			break;
 		case RRTCONNECT:
-			// RRTConnectplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+			RRTConnectplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 			break;
 		case RRTSTAR:
-			// RRTStarplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+			RRTStarplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 			break;
 		case PRM:
+			RRTConnectplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 			// PRMplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 			break;
 		default:
 			throw runtime_error("Invalid planner number!\n");
+	}
+
+	if (!equalDoubleArrays(plan[0], startPos, numOfDOFs))
+	{
+		throw std::runtime_error("Start position not matching");
+	}
+	if (!equalDoubleArrays(plan[planlength-1], goalPos, numOfDOFs))
+	{
+		throw std::runtime_error("Goal position not matching");
 	}
 
 	//// Feel free to modify anything above.

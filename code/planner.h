@@ -42,7 +42,11 @@
 #endif
 
 #define PI 3.141592654
-#define EPSILON 1.2
+#define EPSILON 0.6
+
+#define TRAPPED 0
+#define ADVANCED 1
+#define REACHED 2
 
 //the length of each link in the arm
 #define LINKLENGTH_CELLS 10
