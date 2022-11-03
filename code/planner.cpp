@@ -30,7 +30,6 @@ int newConfig(double* q, double* q_near, double* q_new, int numofDOFs, double* m
     int numofsamples = (int)(dist/(PI/20));
 
     double* tmp_angles = (double*)malloc(numofDOFs*sizeof(double));
-    double* saved_angles = NULL;
 
     for (i = 1; i < numofsamples; i++)
     {
@@ -158,6 +157,145 @@ int connect(Tree* tree_b, double* q_new, int numofDOFs, double* map, int x_size,
 	}
 	while(status == ADVANCED);
 	return status;
+}
+
+bool aStarInClosedList(int idx, unordered_set<int> closed_list)
+{
+    if (closed_list.find(idx) == closed_list.end())
+        return false;
+    else
+        return true;
+}
+
+// PRM Planner
+static void PRMplanner(
+			double* map,
+			int x_size,
+			int y_size,
+			double* armstart_anglesV_rad,
+			double* armgoal_anglesV_rad,
+            int numofDOFs,
+            double*** plan,
+            int* planlength)
+{
+	//no plan by default
+	*plan = NULL;
+	*planlength = 0;
+
+	Graph graph(numofDOFs, armstart_anglesV_rad, armgoal_anglesV_rad);
+
+	// build roadmap
+	int i = 0;
+	int N = 1500*5;
+
+	int goal_idx = graph.addNode(armgoal_anglesV_rad);
+	int num_edges = 0;
+
+	double R = EPSILON;
+	int k = 15; // max number of connections to neighbours
+
+	clock_t tick = clock();
+	while(i < N)
+	{
+		i++;
+		int n_connected = 0;
+
+		double* alpha_i = randomConfig(numofDOFs, map, x_size, y_size);
+		int alpha_i_idx = graph.addNode(alpha_i);
+
+		for(int i=0; i<graph.nodes.size()-1; i++)
+		{
+			if(distance_angles(graph.nodes[i], alpha_i, numofDOFs) < R)
+			{
+				double* q_new = (double*)malloc(numofDOFs*sizeof(double));
+				newConfig(graph.nodes[i], alpha_i, q_new, numofDOFs, map, x_size, y_size);
+				if(isAtGoal(q_new, alpha_i, numofDOFs))
+				{
+					graph.addEdge(i, alpha_i_idx);
+					n_connected++;
+					num_edges++;
+					if(n_connected >= k)
+						break;
+				}
+			}
+		}
+	}
+	clock_t tock = clock();
+	printf("Goal connections: %d\n", graph.edges[1].size());
+	printf("Start connections: %d\n", graph.edges[0].size());
+	printf("Number of edges: %d\n", num_edges);
+	printf("Time taken to build roadmap: %f seconds\n", (float)(tock-tick)/CLOCKS_PER_SEC);
+
+	// find path using A*
+
+	struct node
+    {
+        int parent = -1; // idx of previous(parent) node
+        int g = std::numeric_limits<int>::max(); // set g value to inf initially
+    };
+
+	priority_queue<pair<int, int>, vector<pair<int, int>>, greater<pair<int, int>>> open_list;
+    unordered_set<int> closed_list;
+    unordered_map<int, node> node_info;
+
+	bool goal_found = false;
+
+	node_info[0].g = 0;
+	open_list.push(make_pair(0, 0));
+
+	while(!open_list.empty() && !goal_found)
+	{
+		pair<int, int> current_node = open_list.top(); 
+		open_list.pop();
+		if(aStarInClosedList(current_node.second, closed_list))
+			continue;
+		closed_list.insert(current_node.second);
+
+		// iterate over successors
+		for(int i=0; i<graph.edges[current_node.second].size(); i++)
+		{
+			int neighbour_idx = graph.edges[current_node.second][i];
+			if(aStarInClosedList(neighbour_idx, closed_list))
+				continue;
+			int cost_to_neighbour = (int) distance_angles(graph.nodes[current_node.second], graph.nodes[neighbour_idx], numofDOFs);
+			if(node_info[neighbour_idx].g > node_info[current_node.second].g + cost_to_neighbour)
+			{
+				node_info[neighbour_idx].parent = current_node.second;
+				node_info[neighbour_idx].g = node_info[current_node.second].g + cost_to_neighbour;
+				int h = (int) distance_angles(graph.nodes[neighbour_idx], graph.nodes[1], numofDOFs);
+				open_list.push(make_pair(node_info[neighbour_idx].g + h, neighbour_idx));
+			}
+		}
+
+		if(aStarInClosedList(1, closed_list))
+			goal_found = true;
+	}
+
+	if(goal_found)
+	{
+		vector<int> path;
+		int current_node = 1;
+		while(current_node != 0)
+		{
+			path.insert(path.begin(),current_node);
+			current_node = node_info[current_node].parent;
+		}
+		path.insert(path.begin(), 0);
+
+		*planlength = path.size();
+		*plan = (double**)malloc(path.size()*sizeof(double*));
+		for(int i=0; i<path.size(); i++)
+		{
+			(*plan)[i] = (double*)malloc(numofDOFs*sizeof(double));
+			for(int j=0; j<numofDOFs; j++)
+				(*plan)[i][j] = graph.nodes[path[i]][j];
+		}
+	}
+	else
+	{
+		printf("No path found\n");
+	}
+
 }
 
 // RRT Star Planner
@@ -568,8 +706,7 @@ int main(int argc, char** argv) {
 			RRTStarplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 			break;
 		case PRM:
-			RRTConnectplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
-			// PRMplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
+			PRMplanner(map, x_size, y_size, startPos, goalPos, numOfDOFs, &plan, &planlength);
 			break;
 		default:
 			throw runtime_error("Invalid planner number!\n");

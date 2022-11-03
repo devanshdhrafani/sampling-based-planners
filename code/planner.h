@@ -3,6 +3,8 @@
 #include <vector>
 #include <array>
 #include <algorithm>
+#include <unordered_set>
+#include <queue>
 
 #include <tuple>
 #include <string>
@@ -14,6 +16,7 @@
 
 #include <time.h> // For random seed
 #include "tree.h"
+#include "graph.h"
 
 /* Input Arguments */
 #define	MAP_IN      prhs[0]
@@ -42,7 +45,7 @@
 #endif
 
 #define PI 3.141592654
-#define EPSILON 0.6
+#define EPSILON 5.0
 
 #define TRAPPED 0
 #define ADVANCED 1
@@ -121,7 +124,6 @@ double* doubleArrayFromString(string str) {
 bool equalDoubleArrays(double* v1, double *v2, int size) {
     for (int i = 0; i < size; ++i) {
         if (abs(v1[i]-v2[i]) > 1e-3) {
-            cout << endl;
             return false;
         }
     }
